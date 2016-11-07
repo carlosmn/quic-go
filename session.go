@@ -42,6 +42,7 @@ type closeCallback func(id protocol.ConnectionID)
 // A Session is a QUIC session
 type Session struct {
 	connectionID protocol.ConnectionID
+	perspective  protocol.Perspective
 	version      protocol.VersionNumber
 
 	streamCallback StreamCallback
@@ -91,6 +92,59 @@ type Session struct {
 
 // newSession makes a new session
 func newSession(conn connection, v protocol.VersionNumber, connectionID protocol.ConnectionID, sCfg *handshake.ServerConfig, streamCallback StreamCallback, closeCallback closeCallback) (packetHandler, error) {
+	session := &Session{
+		conn:         conn,
+		connectionID: connectionID,
+		perspective:  protocol.PerspectiveServer,
+		version:      v,
+
+		streamCallback: streamCallback,
+		closeCallback:  closeCallback,
+	}
+
+	session.setup()
+
+	cryptoStream, _ := session.GetOrOpenStream(1)
+	var err error
+	session.cryptoSetup, err = handshake.NewCryptoSetup(connectionID, conn.RemoteAddr().IP, v, sCfg, cryptoStream, session.connectionParametersManager, session.aeadChanged)
+	if err != nil {
+		return nil, err
+	}
+
+	session.packer = newPacketPacker(connectionID, session.cryptoSetup, session.connectionParametersManager, session.streamFramer, session.version)
+	session.unpacker = &packetUnpacker{aead: session.cryptoSetup, version: session.version}
+
+	return session, err
+}
+
+func newClientSession(conn *net.UDPConn, addr *net.UDPAddr, v protocol.VersionNumber, connectionID protocol.ConnectionID, streamCallback StreamCallback, closeCallback closeCallback) (*Session, error) {
+	session := &Session{
+		conn:         &udpConn{conn: conn, currentAddr: addr},
+		connectionID: connectionID,
+		perspective:  protocol.PerspectiveClient,
+		version:      v,
+
+		streamCallback: streamCallback,
+		closeCallback:  closeCallback,
+	}
+
+	session.setup()
+
+	cryptoStream, _ := session.GetOrOpenStream(1)
+	var err error
+	session.cryptoSetup, err = handshake.NewCryptoSetupClient(connectionID, v, cryptoStream)
+	if err != nil {
+		return nil, err
+	}
+
+	session.packer = newPacketPacker(connectionID, session.cryptoSetup, session.connectionParametersManager, session.streamFramer, session.version)
+	session.unpacker = &packetUnpacker{aead: session.cryptoSetup, version: session.version}
+
+	return session, err
+}
+
+// setup is called from newSession and newClientSession and initializes values that are independent of the perspective
+func (s *Session) setup() {
 	connectionParametersManager := handshake.NewConnectionParamatersManager()
 	flowControlManager := flowcontrol.NewFlowControlManager(connectionParametersManager)
 
@@ -101,44 +155,24 @@ func newSession(conn connection, v protocol.VersionNumber, connectionID protocol
 	receivedPacketHandler = ackhandler.NewReceivedPacketHandler()
 
 	now := time.Now()
-	session := &Session{
-		conn:         conn,
-		connectionID: connectionID,
-		version:      v,
 
-		streamCallback: streamCallback,
-		closeCallback:  closeCallback,
+	s.connectionParametersManager = connectionParametersManager
+	s.sentPacketHandler = sentPacketHandler
+	s.receivedPacketHandler = receivedPacketHandler
+	s.flowControlManager = flowControlManager
 
-		connectionParametersManager: connectionParametersManager,
-		sentPacketHandler:           sentPacketHandler,
-		receivedPacketHandler:       receivedPacketHandler,
-		flowControlManager:          flowControlManager,
+	s.receivedPackets = make(chan *receivedPacket, protocol.MaxSessionUnprocessedPackets)
+	s.closeChan = make(chan *qerr.QuicError, 1)
+	s.sendingScheduled = make(chan struct{}, 1)
+	s.undecryptablePackets = make([]*receivedPacket, 0, protocol.MaxUndecryptablePackets)
+	s.aeadChanged = make(chan struct{}, 1)
 
-		receivedPackets:      make(chan *receivedPacket, protocol.MaxSessionUnprocessedPackets),
-		closeChan:            make(chan *qerr.QuicError, 1),
-		sendingScheduled:     make(chan struct{}, 1),
-		undecryptablePackets: make([]*receivedPacket, 0, protocol.MaxUndecryptablePackets),
-		aeadChanged:          make(chan struct{}, 1),
+	s.timer = time.NewTimer(0)
+	s.lastNetworkActivityTime = now
+	s.sessionCreationTime = now
 
-		timer: time.NewTimer(0),
-		lastNetworkActivityTime: now,
-		sessionCreationTime:     now,
-	}
-
-	session.streamsMap = newStreamsMap(session.newStream)
-
-	cryptoStream, _ := session.GetOrOpenStream(1)
-	var err error
-	session.cryptoSetup, err = handshake.NewCryptoSetup(connectionID, conn.RemoteAddr().IP, v, sCfg, cryptoStream, session.connectionParametersManager, session.aeadChanged)
-	if err != nil {
-		return nil, err
-	}
-
-	session.streamFramer = newStreamFramer(session.streamsMap, flowControlManager)
-	session.packer = newPacketPacker(connectionID, session.cryptoSetup, session.connectionParametersManager, session.streamFramer, v)
-	session.unpacker = &packetUnpacker{aead: session.cryptoSetup, version: v}
-
-	return session, err
+	s.streamsMap = newStreamsMap(s.newStream)
+	s.streamFramer = newStreamFramer(s.streamsMap, s.flowControlManager)
 }
 
 // run the session main loop
