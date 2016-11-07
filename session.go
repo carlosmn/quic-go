@@ -111,7 +111,7 @@ func newSession(conn connection, v protocol.VersionNumber, connectionID protocol
 		return nil, err
 	}
 
-	session.packer = newPacketPacker(connectionID, session.cryptoSetup, session.connectionParametersManager, session.streamFramer, session.version)
+	session.packer = newPacketPacker(connectionID, session.cryptoSetup, session.connectionParametersManager, session.streamFramer, session.perspective, session.version)
 	session.unpacker = &packetUnpacker{aead: session.cryptoSetup, version: session.version}
 
 	return session, err
@@ -137,7 +137,7 @@ func newClientSession(conn *net.UDPConn, addr *net.UDPAddr, v protocol.VersionNu
 		return nil, err
 	}
 
-	session.packer = newPacketPacker(connectionID, session.cryptoSetup, session.connectionParametersManager, session.streamFramer, session.version)
+	session.packer = newPacketPacker(connectionID, session.cryptoSetup, session.connectionParametersManager, session.streamFramer, session.perspective, session.version)
 	session.unpacker = &packetUnpacker{aead: session.cryptoSetup, version: session.version}
 
 	return session, err
