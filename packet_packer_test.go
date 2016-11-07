@@ -25,8 +25,11 @@ var _ = Describe("Packet packer", func() {
 
 		streamFramer = newStreamFramer(newStreamsMap(nil), fcm)
 
+		cs, err := handshake.NewCryptoSetup(0, nil, protocol.VersionWhatever, nil, nil, nil, nil)
+		Expect(err).ToNot(HaveOccurred())
+
 		packer = &packetPacker{
-			cryptoSetup:                 &handshake.CryptoSetup{},
+			cryptoSetup:                 cs,
 			connectionParametersManager: handshake.NewConnectionParamatersManager(),
 			packetNumberGenerator:       newPacketNumberGenerator(protocol.SkipPacketAveragePeriodLength),
 			streamFramer:                streamFramer,
