@@ -91,6 +91,7 @@ func newMockSentPacketHandler() ackhandler.SentPacketHandler {
 var _ = Describe("Session", func() {
 	var (
 		session              *Session
+		clientSession        *Session
 		streamCallbackCalled bool
 		closeCallbackCalled  bool
 		conn                 *mockConnection
@@ -118,6 +119,16 @@ var _ = Describe("Session", func() {
 		Expect(err).NotTo(HaveOccurred())
 		session = pSession.(*Session)
 		Expect(session.streamsMap.NumberOfStreams()).To(Equal(1)) // Crypto stream
+
+		clientSession, err = newClientSession(
+			&net.UDPConn{},
+			&net.UDPAddr{},
+			protocol.Version35,
+			0,
+			func(*Session, utils.Stream) { streamCallbackCalled = true },
+			func(protocol.ConnectionID) { closeCallbackCalled = true },
+		)
+		Expect(clientSession.streamsMap.NumberOfStreams()).To(Equal(1))
 	})
 
 	Context("when handling stream frames", func() {
@@ -454,6 +465,7 @@ var _ = Describe("Session", func() {
 
 		BeforeEach(func() {
 			session.unpacker = &mockUnpacker{}
+			clientSession.unpacker = &mockUnpacker{}
 			hdr = &PublicHeader{PacketNumberLen: protocol.PacketNumberLen6}
 		})
 
@@ -492,6 +504,14 @@ var _ = Describe("Session", func() {
 			hdr.PacketNumber = 5
 			err = session.handlePacketImpl(&receivedPacket{publicHeader: hdr})
 			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("passes the diversification nonce to the cryptoSetup, if it is a client", func() {
+			hdr.PacketNumber = 5
+			hdr.DiversificationNonce = []byte("foobar")
+			err := clientSession.handlePacketImpl(&receivedPacket{publicHeader: hdr})
+			Expect(err).ToNot(HaveOccurred())
+			Expect((*[]byte)(unsafe.Pointer(reflect.ValueOf(clientSession.cryptoSetup).Elem().FieldByName("diversificationNonce").UnsafeAddr()))).To(Equal(&hdr.DiversificationNonce))
 		})
 	})
 
