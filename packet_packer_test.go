@@ -10,6 +10,24 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+type mockCryptoSetup struct {
+	diversificationNonce []byte
+}
+
+func (m *mockCryptoSetup) HandleCryptoStream() error { panic("not implemented") }
+
+func (m *mockCryptoSetup) Open(dst, src []byte, packetNumber protocol.PacketNumber, associatedData []byte) ([]byte, error) {
+	return nil, nil
+}
+func (m *mockCryptoSetup) Seal(dst, src []byte, packetNumber protocol.PacketNumber, associatedData []byte) []byte {
+	return append(src, bytes.Repeat([]byte{0}, 12)...)
+}
+func (m *mockCryptoSetup) LockForSealing()                      {}
+func (m *mockCryptoSetup) UnlockForSealing()                    {}
+func (m *mockCryptoSetup) HandshakeComplete() bool              { panic("not implemented") }
+func (m *mockCryptoSetup) DiversificationNonce() []byte         { return m.diversificationNonce }
+func (m *mockCryptoSetup) SetDiversificationNonce([]byte) error { panic("not implemented") }
+
 var _ = Describe("Packet packer", func() {
 	var (
 		packer          *packetPacker
@@ -25,11 +43,8 @@ var _ = Describe("Packet packer", func() {
 
 		streamFramer = newStreamFramer(newStreamsMap(nil), fcm)
 
-		cs, err := handshake.NewCryptoSetup(0, nil, protocol.VersionWhatever, nil, nil, nil, nil)
-		Expect(err).ToNot(HaveOccurred())
-
 		packer = &packetPacker{
-			cryptoSetup:                 cs,
+			cryptoSetup:                 &mockCryptoSetup{},
 			connectionParametersManager: handshake.NewConnectionParamatersManager(),
 			packetNumberGenerator:       newPacketNumberGenerator(protocol.SkipPacketAveragePeriodLength),
 			streamFramer:                streamFramer,
@@ -58,6 +73,19 @@ var _ = Describe("Packet packer", func() {
 		f.Write(b, 0)
 		Expect(p.frames).To(HaveLen(1))
 		Expect(p.raw).To(ContainSubstring(string(b.Bytes())))
+	})
+
+	It("includes a diversification nonce, when acting as a server", func() {
+		nonce := bytes.Repeat([]byte{'e'}, 32)
+		packer.cryptoSetup.(*mockCryptoSetup).diversificationNonce = nonce
+		f := &frames.StreamFrame{
+			StreamID: 5,
+			Data:     []byte{0xDE, 0xCA, 0xFB, 0xAD},
+		}
+		streamFramer.AddFrameForRetransmission(f)
+		p, err := packer.PackPacket(nil, []frames.Frame{}, 0, true)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(p.raw).To(ContainSubstring(string(nonce)))
 	})
 
 	It("packs a ConnectionCloseFrame", func() {
